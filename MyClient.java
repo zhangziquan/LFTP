@@ -18,6 +18,7 @@ public class MyClient {
     private static final String DEFAULT_HOST = "localhost";
     private static final String DEFAULT_FILE = "local.txt";
 
+    private static InetAddress host;
     private static final int SERVER_PORT = 5555;
     private static int SERVER_SEND_PORT = 0;
 
@@ -26,12 +27,15 @@ public class MyClient {
     private static String filename = "test.pdf";
 
     public static void main(String[] args) {
-        String host = DEFAULT_HOST;
         int port = DEFAULT_PORT;
         filename = DEFAULT_FILE;
 
         if (args.length > 0) {
-            host = args[0];
+            try {
+                host = InetAddress.getByName(args[0]);
+            } catch (Exception e) {
+                // TODO: handle exception
+            }
         }
 
         if (args.length > 1) {
@@ -61,7 +65,7 @@ public class MyClient {
         try {
             DatagramPacket packet = new DatagramPacket(new byte[128], 128);
             packet.setPort(SERVER_PORT);
-            packet.setAddress(InetAddress.getByName("localhost"));
+            packet.setAddress(host);
             packet.setData(("Hello Server, file:" + filename).getBytes());
             clientSocket.send(packet);
 
@@ -73,7 +77,7 @@ public class MyClient {
 
     public static void receiveFile() {
         try {
-            byte[] data = new byte[1024 + 10];
+            byte[] data = new byte[1024 + 20];
             DatagramPacket receivePacket = new DatagramPacket(data, data.length);
             clientSocket.receive(receivePacket);
             SERVER_SEND_PORT = receivePacket.getPort();
@@ -90,12 +94,13 @@ public class MyClient {
                 if (Math.random() <= 1) {
                     byte[] packet = new byte[receivePacket.getLength()];
                     System.arraycopy(receivePacket.getData(), 0, packet, 0, receivePacket.getLength());
-                    byte[] seqByte = new byte[10];
-                    byte[] buffer = new byte[packet.length - 10];
-                    System.arraycopy(packet, 0, seqByte, 0, 10);
-                    System.arraycopy(packet, 10, buffer, 0, packet.length - 10);
+                    byte[] seqByte = new byte[20];
+                    byte[] buffer = new byte[packet.length - 20];
+                    System.arraycopy(packet, 0, seqByte, 0, 20);
+                    System.arraycopy(packet, 20, buffer, 0, packet.length - 20);
                     String seq = new String(seqByte);
                     int seqnum = Integer.parseInt(seq.substring(4).trim());
+                    System.out.println("the Seq:" + seqnum + " packet come");
                     if (seqnum == nextseq) {
                         System.out.println(count++ + "| Recive the Seq:" + seqnum + " packet");
                         nextseq++;
@@ -107,6 +112,7 @@ public class MyClient {
                     clientSocket.receive(receivePacket);
 
                 } else {
+                    System.out.println("drop the packet,need " + nextseq + " now : ");
                     clientSocket.receive(receivePacket);
                 }
             }
@@ -122,7 +128,7 @@ public class MyClient {
     public static void respond(Integer endReceive) {
         try {
             byte[] ackData = new String("ack:" + endReceive).getBytes();
-            InetAddress ServerAddress = InetAddress.getByName("localhost");
+            InetAddress ServerAddress = host;
             DatagramPacket sendAck = new DatagramPacket(ackData, ackData.length, ServerAddress, SERVER_SEND_PORT);
             clientSocket.send(sendAck);
             System.out.println("client send the ack = " + endReceive);

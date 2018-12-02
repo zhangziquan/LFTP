@@ -71,12 +71,16 @@ class Handle implements Runnable {
     String filename;
     InetAddress clientAdd;
     static int idleport = 5000;
-    public static int start = 0, end = 19, datacount;
-    public static int finalack = -1;
-    public static int acknum = 0;
-    static InputStream fileInput;
-    static Vector<byte[]> filedata = new Vector<byte[]>();
-    static Timer[] timers = new Timer[20000];
+    private int start = 0, end = 19, datacount;
+    private int finalack = -1;
+    private int acknum = 0;
+    private InputStream fileInput;
+    private Vector<byte[]> filedata = new Vector<byte[]>();
+    private Vector<Timer> timers = new Vector<Timer>();
+    private int rwnd = 20;
+
+    private int timeout = 50;
+    private boolean retransfer = false;
 
     static DatagramSocket serveSocket = null;
 
@@ -88,7 +92,7 @@ class Handle implements Runnable {
 
     public void run() {
 
-        int cwnd = 20;
+        int rwnd = 20;
         int base = 0;// window begin
         int last = 0;
         start = 0;
@@ -98,28 +102,28 @@ class Handle implements Runnable {
         filedata.removeAllElements();
 
         try {
-            byte[] seqData = new byte[10];
+            byte[] seqData = new byte[20];
             byte[] buffer = new byte[1024];
             serverPort = idleport++;
             DatagramSocket serveSocket = new DatagramSocket(serverPort);
-            DatagramPacket dataPacket = new DatagramPacket(new byte[1024 + 10], 1024 + 10);
+            DatagramPacket dataPacket = new DatagramPacket(new byte[1024 + 20], 1024 + 20);
 
             dataPacket.setPort(clientPort);
             dataPacket.setAddress(clientAdd);
 
             fileInput = new FileInputStream(new File(filename));
             int bytenum = fileInput.read(buffer);
-            datacount = 0;
             for (int i = start; i <= end; i++) {
                 String seq = "Seq:" + datacount;
                 System.out.println("Send the " + datacount++ + " packet");
                 System.arraycopy(seq.getBytes(), 0, seqData, 0, seq.getBytes().length);
                 byte[] packet = byteMerger(seqData, buffer);
                 filedata.addElement(packet);
-                dataPacket.setData(packet, 0, bytenum + 10);
+                dataPacket.setData(packet, 0, bytenum + 20);
                 serveSocket.send(dataPacket);
-                timers[i] = new Timer(3000, new DelayActionListener(serveSocket, i, timers));
-                timers[i].start();
+                Timer newtimer = new Timer(timeout, new DelayActionListener(serveSocket, i));
+                newtimer.start();
+                timers.add(newtimer);
                 if (i != end) {
                     bytenum = fileInput.read(buffer);
                 }
@@ -156,45 +160,56 @@ class Handle implements Runnable {
                 serveSocket.receive(recvPacket);
                 int ackseq = Integer.parseInt(new String(recvPacket.getData()).substring(4).trim());
                 System.out.println("Server receive ack = " + ackseq);
-                timers[ackseq].stop();
-                if (ackseq == start) {
+                if (ackseq == -1) {
+                    continue;
+                }
+                timers.elementAt(acknum - ackseq).stop();
+                if (ackseq >= acknum) {
                     if (finalack != -1) {
                         if (ackseq == finalack) {
-                            for (int i = 0; i < datacount; i++) {
-                                timers[i].stop();
+                            for (int i = 0; i < timers.size(); i++) {
+                                timers.elementAt(i).stop();
                             }
                             return;
                         }
                     }
-                    start++;
-                    end++;
-                    byte[] buffer = new byte[1024];
-                    DatagramPacket dataPacket = new DatagramPacket(new byte[1024 + 10], 1024 + 10);
-                    int bytenum = fileInput.read(buffer);
-                    if (bytenum == -1) {
-                        finalack = datacount - 1;
-                        continue;
-                    }
-                    String newseq = "Seq:" + datacount;
-                    System.out.println("Send the " + datacount++ + " packet");
-                    byte[] seqData = new byte[10];
-                    System.arraycopy(newseq.getBytes(), 0, seqData, 0, newseq.getBytes().length);
-                    byte[] packet = byteMerger(seqData, buffer);
-                    filedata.add(packet);
+                    int rcnum = acknum - ackseq + 1;
+                    acknum = ackseq + 1;
+                    for (int i = 0; i < rcnum; i++) {
+                        timers.elementAt(0).stop();
+                        timers.remove(0);
+                        filedata.remove(0);
 
-                    dataPacket.setPort(clientPort);
-                    dataPacket.setAddress(clientAdd);
-                    dataPacket.setData(packet, 0, bytenum + 10);
-                    serveSocket.send(dataPacket);
-                    timers[end] = new Timer(3000, new DelayActionListener(serveSocket, start, timers));
-                    timers[end].start();
-                } else if (ackseq < start) {
-                    for (int i = 0; i < start; i++) {
-                        timers[i].stop();
+                        start++;
+                        end++;
+                        byte[] buffer = new byte[1024];
+                        DatagramPacket dataPacket = new DatagramPacket(new byte[1024 + 20], 1024 + 20);
+                        int bytenum = fileInput.read(buffer);
+                        if (bytenum == -1) {
+                            finalack = datacount - 1;
+                            break;
+                        }
+                        String newseq = "Seq:" + datacount;
+                        System.out.println("Send the " + datacount++ + " packet");
+                        byte[] seqData = new byte[20];
+                        System.arraycopy(newseq.getBytes(), 0, seqData, 0, newseq.getBytes().length);
+                        byte[] packet = byteMerger(seqData, buffer);
+                        filedata.add(packet);
+
+                        dataPacket.setPort(clientPort);
+                        dataPacket.setAddress(clientAdd);
+                        dataPacket.setData(packet, 0, bytenum + 20);
+                        serveSocket.send(dataPacket);
+                        Timer newtimer = new Timer(timeout, new DelayActionListener(serveSocket, end));
+                        newtimer.start();
+                        timers.add(newtimer);
                     }
+                } else {
+
                 }
             } catch (Exception e) {
                 // TODO: handle exception
+
                 e.printStackTrace();
             }
         }
@@ -203,40 +218,61 @@ class Handle implements Runnable {
     class DelayActionListener implements ActionListener {
         DatagramSocket serveSocket;
         int end_ack;
-        Timer[] timers;
 
-        public DelayActionListener(DatagramSocket serveSocket, int end_ack, Timer[] timers) {
+        public DelayActionListener(DatagramSocket serveSocket, int end_ack) {
             this.serveSocket = serveSocket;
             this.end_ack = end_ack;
-            this.timers = timers;
         }
 
         @Override
         public void actionPerformed(ActionEvent e) {
-            int end = Handle.end;
-            int start = Handle.start;
-            if (end_ack < start) {
-                timers[end_ack].stop();
-                return;
-            }
-            System.out.println("Server begin to tranfer the data again " + end_ack + "--" + end);
-            for (int i = start; i < end; i++) {
+            int the_end = end;
+            int the_start = start;
+            System.out.println("Server begin to tranfer the data again " + end_ack + "--" + the_end);
+            for (int i = 0; i < timers.size(); i++) {
                 try {
-                    DatagramPacket dataPacket = new DatagramPacket(new byte[1024 + 10], 1024 + 10);
+                    DatagramPacket dataPacket = new DatagramPacket(new byte[1024 + 20], 1024 + 20);
 
                     dataPacket.setPort(clientPort);
                     dataPacket.setAddress(clientAdd);
                     dataPacket.setData(filedata.elementAt(i));
                     serveSocket.send(dataPacket);
-                    System.out.println("Server transfer the data " + i);
+                    int x = end_ack + i;
+                    System.out.println("Server  re - transfer the data " + x);
+
+                    timers.elementAt(i).stop();
+                    timers.elementAt(i).start();
 
                 } catch (Exception e1) {
                     // TODO: handle exception
                     e1.printStackTrace();
                 }
-                timers[i].stop();
-                timers[i].start();
             }
         }
+    }
+
+    /**
+     * 校验和
+     * 
+     * @param msg    需要计算校验和的byte数组
+     * @param length 校验和位数
+     * @return 计算出的校验和数组
+     */
+    private byte[] SumCheck(byte[] msg, int length) {
+        long mSum = 0;
+        byte[] mByte = new byte[length];
+
+        /** 逐Byte添加位数和 */
+        for (byte byteMsg : msg) {
+            long mNum = ((long) byteMsg >= 0) ? (long) byteMsg : ((long) byteMsg + 256);
+            mSum += mNum;
+        } /** end of for (byte byteMsg : msg) */
+
+        /** 位数和转化为Byte数组 */
+        for (int liv_Count = 0; liv_Count < length; liv_Count++) {
+            mByte[length - liv_Count - 1] = (byte) (mSum >> (liv_Count * 8) & 0xff);
+        } /** end of for (int liv_Count = 0; liv_Count < length; liv_Count++) */
+
+        return mByte;
     }
 }
