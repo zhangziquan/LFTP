@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -23,6 +24,8 @@ public class MyServer {
     public static void main(String[] args) {
         int port = 5555;
         int serverPort;
+
+        String mode = "";
 
         int clientPort;
         String filename;
@@ -44,7 +47,12 @@ public class MyServer {
                         clientPort = packet.getPort();
                         String result = new String(packet.getData());
                         filename = result.substring(result.indexOf("file:") + 5).trim();
-                        Runnable runnable = new Handle(clientAdd, clientPort, filename);
+                        if (result.contains("lsend")) {
+                            mode = "lsend";
+                        } else if (result.contains("lget")) {
+                            mode = "lget";
+                        }
+                        Runnable runnable = new Handle(clientAdd, clientPort, filename, mode);
                         Thread thread = new Thread(runnable);
                         thread.start();
                     } catch (Exception e) {
@@ -66,6 +74,8 @@ public class MyServer {
 class Handle implements Runnable {
 
     private static int serverPort;
+    private int CLIENT_SEND_PORT = 0;
+    private String mode;
 
     private int clientPort;
     String filename;
@@ -79,22 +89,19 @@ class Handle implements Runnable {
     private Vector<Timer> timers = new Vector<Timer>();
     private int rwnd = 20;
 
-    private int timeout = 50;
+    private int timeout = 500;
     private boolean retransfer = false;
 
     static DatagramSocket serveSocket = null;
 
-    Handle(InetAddress clientAdd, int clientPort, String filename) {
+    Handle(InetAddress clientAdd, int clientPort, String filename, String mode) {
         this.clientAdd = clientAdd;
         this.clientPort = clientPort;
         this.filename = filename;
+        this.mode = mode;
     }
 
-    public void run() {
-
-        int rwnd = 20;
-        int base = 0;// window begin
-        int last = 0;
+    private void sendFile() {
         start = 0;
         end = 10;
         datacount = 0;
@@ -142,6 +149,87 @@ class Handle implements Runnable {
             serveSocket.close();
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    public void receiveFile() {
+        try {
+
+            // say hello to client
+            byte[] data = new byte[1024 + 20];
+            serverPort = idleport++;
+            serveSocket = new DatagramSocket(serverPort);
+            DatagramPacket hellopacket = new DatagramPacket(new byte[128], 128);
+            hellopacket.setPort(clientPort);
+            hellopacket.setAddress(clientAdd);
+            hellopacket.setData(("Hello Client, receive file:" + filename).getBytes());
+            serveSocket.send(hellopacket);
+
+            DatagramPacket receivePacket = new DatagramPacket(data, data.length);
+            serveSocket.receive(receivePacket);
+            System.out.println("Downloading...");
+            File thefile = new File(filename);
+            thefile.createNewFile();
+            CLIENT_SEND_PORT = receivePacket.getPort();
+
+            FileOutputStream filepointer = new FileOutputStream(thefile);
+            int endReceive = -1;
+            // read the file
+            int nextseq = 0;
+            int count = 0;
+            while (new String(receivePacket.getData()) != "end" && receivePacket.getLength() != 3) {
+                if (Math.random() <= 1) {
+                    byte[] packet = new byte[receivePacket.getLength()];
+                    System.arraycopy(receivePacket.getData(), 0, packet, 0, receivePacket.getLength());
+                    byte[] seqByte = new byte[20];
+                    byte[] buffer = new byte[packet.length - 20];
+                    System.arraycopy(packet, 0, seqByte, 0, 20);
+                    System.arraycopy(packet, 20, buffer, 0, packet.length - 20);
+                    String seq = new String(seqByte);
+                    int seqnum = Integer.parseInt(seq.substring(4).trim());
+                    System.out.println("the Seq:" + seqnum + " packet come");
+                    if (seqnum == nextseq) {
+                        System.out.println(count++ + "| Recive the Seq:" + seqnum + " packet");
+                        nextseq++;
+                        respond(seqnum);
+                        filepointer.write(buffer, 0, buffer.length);
+                    } else {
+                        respond(nextseq - 1);
+                    }
+                    serveSocket.receive(receivePacket);
+
+                } else {
+                    System.out.println("drop the packet,need " + nextseq + " now : ");
+                    serveSocket.receive(receivePacket);
+                }
+            }
+            filepointer.close();
+            System.out.println("File download is finished! The number of packets is " + count);
+
+        } catch (Exception e) {
+            // TODO: handle exception
+            e.printStackTrace();
+        }
+    }
+
+    private void respond(Integer endReceive) {
+        try {
+            byte[] ackData = new String("ack:" + endReceive).getBytes();
+            DatagramPacket sendAck = new DatagramPacket(ackData, ackData.length, clientAdd, CLIENT_SEND_PORT);
+            serveSocket.send(sendAck);
+            System.out.println("client send the ack = " + endReceive);
+
+        } catch (Exception e) {
+            // TODO: handle exception
+            e.printStackTrace();
+        }
+    }
+
+    public void run() {
+        if (mode == "lget") {
+            sendFile();
+        } else {
+            receiveFile();
         }
     }
 
@@ -252,23 +340,23 @@ class Handle implements Runnable {
     }
 
     /**
-     * Ð£ÑéºÍ
+     * Ð£ï¿½ï¿½ï¿?
      * 
-     * @param msg    ÐèÒª¼ÆËãÐ£ÑéºÍµÄbyteÊý×é
-     * @param length Ð£ÑéºÍÎ»Êý
-     * @return ¼ÆËã³öµÄÐ£ÑéºÍÊý×é
+     * @param msg    ï¿½ï¿½Òªï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½Íµï¿½byteï¿½ï¿½ï¿½ï¿½
+     * @param length Ð£ï¿½ï¿½ï¿½Î»ï¿½ï¿?
+     * @return ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
      */
     private byte[] SumCheck(byte[] msg, int length) {
         long mSum = 0;
         byte[] mByte = new byte[length];
 
-        /** ÖðByteÌí¼ÓÎ»ÊýºÍ */
+        /** ï¿½ï¿½Byteï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿? */
         for (byte byteMsg : msg) {
             long mNum = ((long) byteMsg >= 0) ? (long) byteMsg : ((long) byteMsg + 256);
             mSum += mNum;
         } /** end of for (byte byteMsg : msg) */
 
-        /** Î»ÊýºÍ×ª»¯ÎªByteÊý×é */
+        /** Î»ï¿½ï¿½ï¿½ï¿½×ªï¿½ï¿½ÎªByteï¿½ï¿½ï¿½ï¿½ */
         for (int liv_Count = 0; liv_Count < length; liv_Count++) {
             mByte[length - liv_Count - 1] = (byte) (mSum >> (liv_Count * 8) & 0xff);
         } /** end of for (int liv_Count = 0; liv_Count < length; liv_Count++) */
